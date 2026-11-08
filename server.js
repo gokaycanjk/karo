@@ -15,7 +15,7 @@ const io = new Server(server, {
 
 // socketId -> { username, roomId }
 const users = {};
-// roomId -> { videoUrl, isPlaying, playedSeconds }
+// roomId -> { videoUrl, isPlaying, playedSeconds, lastUpdated }
 const rooms = {};
 // roomId -> hostSocketId
 const roomHosts = {};
@@ -53,14 +53,29 @@ io.on("connection", (socket) => {
     // Mevcut kuyruğu yeni katılana ilet
     socket.emit("queue-updated", roomQueues[roomId]);
 
+    // Odaya yeni girene güncel saniyeyi hesaplayarak ilet
     if (rooms[roomId] && rooms[roomId].videoUrl) {
-      socket.emit("video-updated", rooms[roomId]);
+      const room = rooms[roomId];
+      let currentSeconds = room.playedSeconds || 0;
+
+      // Eğer video oynuyorsa, aradan geçen süreyi üzerine ekle
+      if (room.isPlaying && room.lastUpdated) {
+        const elapsed = (Date.now() - room.lastUpdated) / 1000;
+        currentSeconds += elapsed;
+      }
+
+      socket.emit("video-updated", {
+        videoUrl: room.videoUrl,
+        isPlaying: room.isPlaying,
+        playedSeconds: currentSeconds
+      });
     }
   });
 
   socket.on("sync-video", (data) => {
     if (!data.roomId) return;
 
+    // Sadece oda sahibi (host) videoyu kontrol edebilir
     if (roomHosts[data.roomId] && roomHosts[data.roomId] !== socket.id) {
       return;
     }
@@ -68,8 +83,10 @@ io.on("connection", (socket) => {
     rooms[data.roomId] = {
       videoUrl: data.videoUrl,
       isPlaying: data.isPlaying,
-      playedSeconds: data.playedSeconds || 0
+      playedSeconds: data.playedSeconds || 0,
+      lastUpdated: Date.now() // Son senkronizasyon zamanı
     };
+
     socket.to(data.roomId).emit("video-updated", data);
   });
 

@@ -75,6 +75,8 @@ function RoomContent() {
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
   const isRemoteAction = useRef(false);
   const currentTimeRef = useRef<number>(0);
+  // Odaya yeni giren kullanıcının iframe'i yüklendiğinde atlayacağı hedef durum
+  const pendingInitialSync = useRef<{ playedSeconds: number; isPlaying: boolean } | null>(null);
 
   // Kullanıcı & Oturum Durumları
   const [authUser, setAuthUser] = useState<{ username: string; email: string } | null>(null);
@@ -129,11 +131,31 @@ function RoomContent() {
 
   const onIframeLoad = () => {
     if (!iframeRef.current || !iframeRef.current.contentWindow) return;
+    
     iframeRef.current.contentWindow.postMessage(
       JSON.stringify({ event: "listening" }),
       "*"
     );
     sendIframeCommand("addEventListener", ["onStateChange"]);
+
+    // Yeni kullanıcı odaya girdiğinde iframe hazır olunca bekleyen saniyeye doğrudan atlat
+    if (pendingInitialSync.current) {
+      const { playedSeconds, isPlaying: shouldPlay } = pendingInitialSync.current;
+      pendingInitialSync.current = null;
+      isRemoteAction.current = true;
+
+      setTimeout(() => {
+        sendIframeCommand("seekTo", [playedSeconds, true]);
+        if (shouldPlay) {
+          sendIframeCommand("playVideo");
+        } else {
+          sendIframeCommand("pauseVideo");
+        }
+        setTimeout(() => {
+          isRemoteAction.current = false;
+        }, 1000);
+      }, 500);
+    }
   };
 
   const triggerFloatingEmoji = (emoji: string) => {
@@ -240,10 +262,10 @@ function RoomContent() {
 
   // 2. Oturum Kontrolü & Soket Başlatma
   useEffect(() => {
-  const SOCKET_URL = process.env.NEXT_PUBLIC_SOCKET_URL || "http://localhost:3001";
-const socket = io(SOCKET_URL, {
-  transports: ["websocket", "polling"],
-});
+    const SOCKET_URL = process.env.NEXT_PUBLIC_SOCKET_URL || "http://localhost:3001";
+    const socket = io(SOCKET_URL, {
+      transports: ["websocket", "polling"],
+    });
     socketRef.current = socket;
 
     socket.on("user-list", (data: { users: string[]; hostName: string } | string[]) => {
@@ -262,29 +284,45 @@ const socket = io(SOCKET_URL, {
     socket.on("video-updated", ({ isPlaying: remotePlaying, playedSeconds, videoUrl: remoteUrl }) => {
       isRemoteAction.current = true;
 
-      if (remoteUrl) {
-        const parsedId = extractYouTubeId(remoteUrl);
-        if (parsedId) {
-          setVideoId(parsedId);
-        }
-      }
-
       const targetSeconds = typeof playedSeconds === "number" ? playedSeconds : currentTimeRef.current;
       currentTimeRef.current = targetSeconds;
       setIsPlaying(Boolean(remotePlaying));
 
-      setTimeout(() => {
-        sendIframeCommand("seekTo", [targetSeconds, true]);
-        if (remotePlaying) {
-          sendIframeCommand("playVideo");
-        } else {
-          sendIframeCommand("pauseVideo");
+      if (remoteUrl) {
+        const parsedId = extractYouTubeId(remoteUrl);
+        if (parsedId) {
+          setVideoId((prevId) => {
+            if (prevId !== parsedId) {
+              // Video ilk defa yükleniyorsa iframe onload'a hedef saniyeyi ver
+              pendingInitialSync.current = { playedSeconds: targetSeconds, isPlaying: Boolean(remotePlaying) };
+              return parsedId;
+            }
+            // Zaten aynı video açıksa doğrudan saniyeye atla
+            setTimeout(() => {
+              sendIframeCommand("seekTo", [targetSeconds, true]);
+              if (remotePlaying) {
+                sendIframeCommand("playVideo");
+              } else {
+                sendIframeCommand("pauseVideo");
+              }
+            }, 300);
+            return prevId;
+          });
         }
-      }, 400);
+      } else {
+        setTimeout(() => {
+          sendIframeCommand("seekTo", [targetSeconds, true]);
+          if (remotePlaying) {
+            sendIframeCommand("playVideo");
+          } else {
+            sendIframeCommand("pauseVideo");
+          }
+        }, 300);
+      }
 
       setTimeout(() => {
         isRemoteAction.current = false;
-      }, 800);
+      }, 1200);
     });
 
     socket.on("message-received", (msg: { sender: string; text: string; time: string }) => {
@@ -455,7 +493,7 @@ const socket = io(SOCKET_URL, {
   return (
     <div className="flex h-screen w-full flex-col bg-zinc-950 font-sans text-zinc-100 overflow-hidden select-none">
       
-      {/* 1. MİSAFİR İSİM GİRİŞ MODAL'I (Yalnızca Oturum Yoksa) */}
+      {/* 1. MİSAFİR İSİM GİRİŞ MODAL'I */}
       {!isAuthChecking && !isNameSet && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 backdrop-blur-md p-4">
           <div className="w-full max-w-sm rounded-2xl border border-zinc-800 bg-zinc-900 p-6 shadow-2xl space-y-4">
