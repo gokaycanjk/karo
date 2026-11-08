@@ -1,7 +1,5 @@
 import { NextResponse } from "next/server";
-import ytSearch from "yt-search";
 
-// YouTube linkinden video ID ayıklama yardımcısı
 function extractVideoId(urlOrText: string): string | null {
   const regExp = /(?:youtu\.be\/|youtube\.com\/(?:embed\/|v\/|watch\?v=|watch\?.+&v=))([\w-]{11})/;
   const match = urlOrText.match(regExp);
@@ -13,7 +11,7 @@ export async function GET(request: Request) {
   const query = searchParams.get("q")?.trim();
 
   if (!query) {
-    return NextResponse.json({ error: "Arama terimi girilmedi." }, { status: 400 });
+    return NextResponse.json({ videos: [], error: "Arama terimi girilmedi." }, { status: 400 });
   }
 
   // 1. Kullanıcı doğrudan YouTube linki yapıştırdıysa:
@@ -23,7 +21,7 @@ export async function GET(request: Request) {
       videos: [
         {
           videoId: directId,
-          title: "Yapıştırılan Video Bağlantısı",
+          title: "Eklenen Video Bağlantısı",
           thumbnail: `https://img.youtube.com/vi/${directId}/hqdefault.jpg`,
           timestamp: "--:--",
           author: "YouTube",
@@ -33,24 +31,42 @@ export async function GET(request: Request) {
     });
   }
 
-  // 2. Normal metin araması (yt-search)
+  // 2. YouTube Data API v3 ile Resmi Arama
+  const apiKey = process.env.YOUTUBE_API_KEY;
+  if (!apiKey) {
+    return NextResponse.json(
+      { videos: [], error: "YOUTUBE_API_KEY yapılandırılmamış. Lütfen doğrudan YouTube linki yapıştırın." },
+      { status: 200 }
+    );
+  }
+
   try {
-    const result = await ytSearch(query);
-    const videos = (result?.videos || []).slice(0, 6).map((video) => ({
-      videoId: video.videoId,
-      title: video.title,
-      thumbnail: video.thumbnail,
-      timestamp: video.timestamp,
-      author: video.author?.name || "Bilinmiyor",
-      url: video.url,
+    const res = await fetch(
+      `https://www.googleapis.com/youtube/v3/search?part=snippet&type=video&maxResults=6&q=${encodeURIComponent(query)}&key=${apiKey}`
+    );
+
+    if (!res.ok) {
+      const errData = await res.json().catch(() => null);
+      console.error("YouTube API Yanıt Hatası:", errData);
+      return NextResponse.json(
+        { videos: [], error: "YouTube arama kotası aşıldı veya anahtar geçersiz. Link yapıştırarak izleyebilirsiniz." },
+        { status: 200 }
+      );
+    }
+
+    const data = await res.json();
+    const videos = (data.items || []).map((item: any) => ({
+      videoId: item.id.videoId,
+      title: item.snippet.title,
+      thumbnail: item.snippet.thumbnails?.high?.url || item.snippet.thumbnails?.default?.url,
+      timestamp: "Canlı / Video",
+      author: item.snippet.channelTitle,
+      url: `https://www.youtube.com/watch?v=${item.id.videoId}`,
     }));
 
     return NextResponse.json({ videos });
-  } catch (error) {
-    console.error("YouTube Arama Hatası:", error);
-    return NextResponse.json(
-      { error: "Arama servisi geçici olarak yanıt vermedi. Lütfen doğrudan YouTube video linki yapıştırın." },
-      { status: 500 }
-    );
+  } catch (err) {
+    console.error("Arama sunucu hatası:", err);
+    return NextResponse.json({ videos: [], error: "Bağlantı hatası oluştu." }, { status: 200 });
   }
 }
